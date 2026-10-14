@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 폰 앱이 이 capability의 도달 가능 여부로 워치 연결/해제를 판단 -->
+    <string-array name="android_wear_capabilities" translatable="false">
+        <item>wear_state_sender</item>
+    </string-array>
+</resources>
