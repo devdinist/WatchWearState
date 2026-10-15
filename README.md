@@ -1,6 +1,6 @@
 # WatchWearState
 
-갤럭시워치 착용 → 폰 알림 진동 끄기 / 워치 벗음·연결 해제 → 폰 알림 진동 복원 (Tasker 불필요)
+갤럭시워치 착용 / 벗음·연결 해제 → 폰 진동 세기(알림·전화·시스템·미디어)를 지정한 값으로 변경 (Tasker 불필요)
 
 ```
 [워치 wear 모듈]                    [폰 mobile 모듈]
@@ -8,18 +8,26 @@ OffBodyService                      WearStateListenerService
  └ 착용감지 센서 ── DataClient ──▶   ├ onDataChanged ─────┐
                   (BT/Wi-Fi 자동)   └ onCapabilityChanged ┤
                                                           └ VibrationControl
-                                                             └ SEM_VIBRATION_NOTIFICATION_INTENSITY 변경
+                                                             └ 항목별 진동 세기 변경
 ```
 
 | 이벤트 | 의미 | 동작 |
 |---|---|---|
-| `WATCH_ON` | 워치 착용 | 현재 세기를 기억하고 0으로 |
-| `WATCH_OFF` | 워치 벗음 | 기억한 세기로 복원 (없으면 3) |
-| `WATCH_DISCONNECTED` | 워치 연결 끊김 | 기억한 세기로 복원 |
+| `WATCH_ON` | 워치 착용 | 켜 둔 항목을 "착용 시" 값으로 |
+| `WATCH_OFF` | 워치 벗음 | 켜 둔 항목을 "벗었을 때" 값으로 |
+| `WATCH_DISCONNECTED` | 워치 연결 끊김 | 켜 둔 항목을 "벗었을 때" 값으로 |
 | `WATCH_CONNECTED` | 워치 재연결 | 없음 (직후 현재 착용 상태가 재전송됨) |
 
-- 착용 중에 직접 세기를 올려 두었다면, 벗을 때 그 값을 그대로 둡니다.
-- 대상 키: `settings system SEM_VIBRATION_NOTIFICATION_INTENSITY` (설정 → 소리 및 진동 → 진동 세기 → 알림, 0~5). 다른 진동(전화 `VIB_RECVCALL_MAGNITUDE` 등)도 바꾸려면 `VibrationControl.kt` 수정.
+폰 앱 화면에서 항목별로 조절 여부(체크)와 착용 시 / 벗었을 때 세기(0~5)를 지정합니다. 처음 값은 착용 시 0, 벗었을 때는 그 시점의 폰 설정값입니다. 기본으로는 알림만 켜져 있습니다.
+
+| 항목 (설정 → 소리 및 진동 → 진동 세기) | `settings system` 키 |
+|---|---|
+| 알림 | `SEM_VIBRATION_NOTIFICATION_INTENSITY` |
+| 전화 | `VIB_RECVCALL_MAGNITUDE` |
+| 시스템 | `VIB_FEEDBACK_MAGNITUDE` |
+| 미디어 | `media_vibration_intensity` |
+
+키는 Galaxy S25 Ultra(Android 16)에서 슬라이더를 움직여 확인했습니다. 다른 기종에서 다르면 `VibrationChannel`(`VibrationControl.kt`)을 수정하세요.
 
 ## 1. 빌드 & 설치
 
@@ -46,7 +54,7 @@ OffBodyService                      WearStateListenerService
 
 ## 2. 테스트 순서
 
-1. 폰 앱의 [워치 착용] / [워치 벗음] 버튼 → "결과"와 "현재 알림 진동 세기"가 바뀌는지 (워치 없이 검증)
+1. 폰 앱의 [워치 착용] / [워치 벗음] 버튼 → "결과"와 항목별 "현재 폰 설정"이 지정한 값으로 바뀌는지 (워치 없이 검증)
 2. 워치 앱 [감지 시작] → 워치 벗기 → 폰 앱 "마지막 이벤트: WATCH_OFF" 확인
 3. 폰 블루투스 끄기 → WATCH_DISCONNECTED 확인
 4. 로그: `adb logcat -s OffBodyService WearStateListener VibrationControl`

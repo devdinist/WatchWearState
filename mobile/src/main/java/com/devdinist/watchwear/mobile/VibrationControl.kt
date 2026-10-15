@@ -7,70 +7,101 @@ import android.provider.Settings
 import android.util.Log
 import androidx.core.content.ContextCompat
 
+/** 설정 → 소리 및 진동 → 진동 세기의 각 항목 (삼성 비공개 system 키, 0~5) */
+enum class VibrationChannel(val label: String, val key: String, val enabledByDefault: Boolean) {
+    NOTIFICATION("알림", "SEM_VIBRATION_NOTIFICATION_INTENSITY", true),
+    CALL("전화", "VIB_RECVCALL_MAGNITUDE", false),
+    SYSTEM("시스템", "VIB_FEEDBACK_MAGNITUDE", false),
+    MEDIA("미디어", "media_vibration_intensity", false),
+}
+
 /**
- * 워치 상태 이벤트를 받아 폰의 알림 진동 세기를 직접 변경.
- * - WATCH_ON: 현재 세기를 기억하고 0으로
- * - WATCH_OFF / WATCH_DISCONNECTED: 기억한 세기로 복원
+ * 워치 상태 이벤트를 받아 폰의 진동 세기를 사용자가 지정한 값으로 변경.
+ * - WATCH_ON: 각 항목을 "착용 시" 값으로
+ * - WATCH_OFF / WATCH_DISCONNECTED: 각 항목을 "벗었을 때" 값으로
  *
- * 삼성 비공개 키라 일반 WRITE_SETTINGS로는 못 쓰고, 최초 1회 adb 권한 부여가 필요:
+ * 비공개 키라 일반 WRITE_SETTINGS로는 못 쓰고, 최초 1회 adb 권한 부여가 필요:
  *   adb shell pm grant com.devdinist.watchwear android.permission.WRITE_SECURE_SETTINGS
  */
 object VibrationControl {
     private const val TAG = "VibrationControl"
 
-    /** 설정 → 소리 및 진동 → 진동 세기 → 알림 (0~5) */
-    const val KEY_NOTIFICATION_INTENSITY = "SEM_VIBRATION_NOTIFICATION_INTENSITY"
-
-    /** 기억한 값이 없을 때 복원할 기본 세기 */
-    private const val DEFAULT_INTENSITY = 3
+    const val MAX_INTENSITY = 5
 
     fun hasPermission(context: Context) =
         ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_SECURE_SETTINGS) ==
             PackageManager.PERMISSION_GRANTED
 
-    fun currentIntensity(context: Context): Int? =
+    fun currentIntensity(context: Context, channel: VibrationChannel): Int? =
         runCatching {
-            Settings.System.getInt(context.contentResolver, KEY_NOTIFICATION_INTENSITY)
+            Settings.System.getInt(context.contentResolver, channel.key)
         }.getOrNull()
 
     fun handle(context: Context, action: String, eventTime: Long = System.currentTimeMillis()) {
         StateStore.save(context, action, eventTime)
         Log.i(TAG, "event: $action")
-        val result = runCatching {
-            when (action) {
-                Contract.ACTION_WATCH_ON -> mute(context)
-                Contract.ACTION_WATCH_OFF, Contract.ACTION_WATCH_DISCONNECTED -> restore(context)
-                else -> null // CONNECTED: 직후 ON/OFF가 따로 옴
+        val onBody = when (action) {
+            Contract.ACTION_WATCH_ON -> true
+            Contract.ACTION_WATCH_OFF, Contract.ACTION_WATCH_DISCONNECTED -> false
+            else -> { // CONNECTED: 직후 ON/OFF가 따로 옴
+                StateStore.saveResult(context, null)
+                return
             }
         }
-        result.onFailure { Log.e(TAG, "진동 세기 변경 실패", it) }
-        StateStore.saveResult(
-            context,
-            result.fold({ it }, { "실패: ${it.javaClass.simpleName} (권한 확인)" })
-        )
+        val results = VibrationChannel.entries
+            .filter { ChannelConfig.isEnabled(context, it) }
+            .map { channel ->
+                val target = ChannelConfig.value(context, channel, onBody)
+                runCatching { put(context, channel, target) }
+                    .fold(
+                        { "${channel.label} $target" },
+                        {
+                            Log.e(TAG, "${channel.label} 진동 세기 변경 실패", it)
+                            "${channel.label} 실패(${it.javaClass.simpleName})"
+                        }
+                    )
+            }
+        StateStore.saveResult(context, results.joinToString().ifEmpty { "조절할 항목 없음" })
     }
 
-    private fun mute(context: Context): String {
-        val current = currentIntensity(context) ?: DEFAULT_INTENSITY
-        // ON이 중복으로 와도(재연결 재동기화 등) 0을 기억하지 않도록
-        if (current > 0) StateStore.saveRestoreValue(context, current)
-        put(context, 0)
-        return "알림 진동 $current → 0"
+    private fun put(context: Context, channel: VibrationChannel, value: Int) {
+        Settings.System.putInt(context.contentResolver, channel.key, value)
+        Log.i(TAG, "${channel.key}=$value")
+    }
+}
+
+/** 항목별 조절 여부와 착용 시 / 벗었을 때 세기 (폰 앱 화면에서 지정) */
+object ChannelConfig {
+    private const val PREFS = "channels"
+    private const val DEFAULT_OFF_BODY = 3
+
+    private fun prefs(context: Context) =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
+    fun isEnabled(context: Context, channel: VibrationChannel) =
+        prefs(context).getBoolean("${channel.name}_enabled", channel.enabledByDefault)
+
+    fun setEnabled(context: Context, channel: VibrationChannel, enabled: Boolean) {
+        prefs(context).edit().putBoolean("${channel.name}_enabled", enabled).apply()
     }
 
-    private fun restore(context: Context): String {
-        val current = currentIntensity(context) ?: 0
-        // 착용 중에 직접 세기를 올렸다면 그 값을 존중
-        if (current > 0) return "알림 진동 $current 유지"
-        val target = StateStore.loadRestoreValue(context) ?: DEFAULT_INTENSITY
-        put(context, target)
-        return "알림 진동 0 → $target"
+    fun value(context: Context, channel: VibrationChannel, onBody: Boolean): Int {
+        val key = valueKey(channel, onBody)
+        val p = prefs(context)
+        if (p.contains(key)) return p.getInt(key, 0)
+        // 처음엔 착용 시 0, 벗었을 때는 지금 폰에 설정된 세기(0이면 기본값)로 시작
+        val initial = if (onBody) 0 else
+            VibrationControl.currentIntensity(context, channel)?.takeIf { it > 0 } ?: DEFAULT_OFF_BODY
+        p.edit().putInt(key, initial).apply()
+        return initial
     }
 
-    private fun put(context: Context, value: Int) {
-        Settings.System.putInt(context.contentResolver, KEY_NOTIFICATION_INTENSITY, value)
-        Log.i(TAG, "$KEY_NOTIFICATION_INTENSITY=$value")
+    fun setValue(context: Context, channel: VibrationChannel, onBody: Boolean, value: Int) {
+        prefs(context).edit().putInt(valueKey(channel, onBody), value).apply()
     }
+
+    private fun valueKey(channel: VibrationChannel, onBody: Boolean) =
+        "${channel.name}_${if (onBody) "on" else "off"}"
 }
 
 object StateStore {
@@ -96,11 +127,4 @@ object StateStore {
     }
 
     fun loadResult(context: Context): String? = prefs(context).getString("last_result", null)
-
-    fun saveRestoreValue(context: Context, value: Int) {
-        prefs(context).edit().putInt("restore_value", value).apply()
-    }
-
-    fun loadRestoreValue(context: Context): Int? =
-        prefs(context).getInt("restore_value", -1).takeIf { it > 0 }
 }
