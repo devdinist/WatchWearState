@@ -68,6 +68,10 @@ class MainActivity : Activity() {
         header.setOnCheckedChangeListener { _, checked ->
             ChannelConfig.setEnabled(this, channel, checked)
             sliders.visibility = if (checked) LinearLayout.VISIBLE else LinearLayout.GONE
+            if (checked) {
+                VibrationControl.applyIfCurrent(this, channel)
+                refresh()
+            }
         }
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -85,7 +89,11 @@ class MainActivity : Activity() {
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(bar: SeekBar, value: Int, fromUser: Boolean) {
                     label.text = "$name: $value"
-                    if (fromUser) ChannelConfig.setValue(this@MainActivity, channel, onBody, value)
+                    if (!fromUser) return
+                    ChannelConfig.setValue(this@MainActivity, channel, onBody, value)
+                    // 지금 워치 상태에 해당하는 슬라이더면 폰 설정에 바로 반영
+                    VibrationControl.applyIfCurrent(this@MainActivity, channel, onBody)
+                    refresh()
                 }
                 override fun onStartTrackingTouch(bar: SeekBar) = Unit
                 override fun onStopTrackingTouch(bar: SeekBar) = Unit
@@ -131,6 +139,11 @@ class MainActivity : Activity() {
         val timeText = if (time == 0L) "-" else
             SimpleDateFormat("MM-dd HH:mm:ss", Locale.KOREA).format(Date(time))
         statusView.text = buildString {
+            appendLine(
+                "워치 상태: " + when (StateStore.loadOnBody(this@MainActivity)) {
+                    true -> "착용"; false -> "벗음"; null -> "-"
+                }
+            )
             appendLine("마지막 이벤트: ${action ?: "-"}")
             appendLine("시각: $timeText")
             appendLine("결과: ${StateStore.loadResult(this@MainActivity) ?: "-"}")
