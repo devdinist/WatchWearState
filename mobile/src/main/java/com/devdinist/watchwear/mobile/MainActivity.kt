@@ -1,7 +1,11 @@
 package com.devdinist.watchwear.mobile
 
 import android.app.Activity
+import android.database.ContentObserver
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.provider.Settings
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.LinearLayout
@@ -19,6 +23,15 @@ class MainActivity : Activity() {
 
     private lateinit var statusView: TextView
     private val currentViews = mutableMapOf<VibrationChannel, TextView>()
+    private val seekBars = mutableMapOf<Pair<VibrationChannel, Boolean>, SeekBar>()
+
+    /** 화면을 보는 중에 설정 → 진동 세기에서 값을 바꾸면 바로 가져와 슬라이더에 반영 */
+    private val settingsObserver = object : ContentObserver(Handler(Looper.getMainLooper())) {
+        override fun onChange(selfChange: Boolean) {
+            VibrationControl.syncFromSettings(this@MainActivity)
+            refresh()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -46,7 +59,18 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        VibrationChannel.entries.forEach {
+            contentResolver.registerContentObserver(
+                Settings.System.getUriFor(it.key), false, settingsObserver
+            )
+        }
+        VibrationControl.syncFromSettings(this)
         refresh()
+    }
+
+    override fun onPause() {
+        contentResolver.unregisterContentObserver(settingsObserver)
+        super.onPause()
     }
 
     /** 항목 하나: [✓ 알림 (현재 n)] + 착용 시 / 벗었을 때 슬라이더 */
@@ -99,6 +123,7 @@ class MainActivity : Activity() {
                 override fun onStopTrackingTouch(bar: SeekBar) = Unit
             })
         }
+        seekBars[channel to onBody] = seekBar
         label.text = "$name: ${seekBar.progress}"
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -153,6 +178,11 @@ class MainActivity : Activity() {
                 appendLine("adb shell pm grant $packageName android.permission.WRITE_SECURE_SETTINGS")
             }
             if (extra != null) appendLine(extra)
+        }
+        // 설정에서 가져온 값 등 저장값이 바뀌었으면 슬라이더도 맞춤 (fromUser=false라 재적용 안 됨)
+        seekBars.forEach { (k, bar) ->
+            val value = ChannelConfig.value(this, k.first, k.second)
+            if (bar.progress != value) bar.progress = value
         }
         currentViews.forEach { (channel, view) ->
             view.text = "현재 폰 설정: ${VibrationControl.currentIntensity(this, channel) ?: "?"}"

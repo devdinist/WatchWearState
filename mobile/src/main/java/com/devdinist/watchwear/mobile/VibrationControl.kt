@@ -48,6 +48,8 @@ object VibrationControl {
                 return
             }
         }
+        // 상태를 바꾸기 전에, 이전 상태 동안 설정 화면에서 바꾼 값을 먼저 가져와 덮어쓰지 않도록
+        syncFromSettings(context)
         StateStore.saveOnBody(context, onBody)
         val results = VibrationChannel.entries
             .filter { ChannelConfig.isEnabled(context, it) }
@@ -64,6 +66,25 @@ object VibrationControl {
         if (onBody != null && onBody != current) return
         if (!ChannelConfig.isEnabled(context, channel)) return
         StateStore.saveResult(context, apply(context, channel, current))
+    }
+
+    /**
+     * 설정 → 진동 세기에서 사용자가 직접 바꾼 값을 현재 워치 상태의 지정 값으로 가져옴 (설정 → 앱 동기화).
+     * @return 바뀐 항목이 있으면 true
+     */
+    fun syncFromSettings(context: Context): Boolean {
+        val onBody = StateStore.loadOnBody(context) ?: return false
+        var changed = false
+        for (channel in VibrationChannel.entries) {
+            if (!ChannelConfig.isEnabled(context, channel)) continue
+            val actual = currentIntensity(context, channel) ?: continue
+            if (actual != ChannelConfig.value(context, channel, onBody)) {
+                ChannelConfig.setValue(context, channel, onBody, actual)
+                Log.i(TAG, "설정에서 변경됨 → ${channel.label} ${if (onBody) "착용 시" else "벗었을 때"}=$actual")
+                changed = true
+            }
+        }
+        return changed
     }
 
     private fun apply(context: Context, channel: VibrationChannel, onBody: Boolean): String {
